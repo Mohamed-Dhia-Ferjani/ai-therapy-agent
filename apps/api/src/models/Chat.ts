@@ -3,17 +3,19 @@ import mongoose, { Schema, Document } from "mongoose";
 export interface IChatMessage {
   role: "user" | "assistant";
   content: string;
-  timestamp: Date;
+  timestamp?: Date;
   metadata?: {
     technique: string;
-    goal: string;
+    goal?: string;
     progress: any[];
   };
 }
 
 export interface IChatSession extends Document {
   sessionId: string;
+  userId: mongoose.Types.ObjectId;
   messages: IChatMessage[];
+  status?: string;
   createdAt: Date;
   updatedAt: Date;
 }
@@ -46,7 +48,17 @@ const chatSessionSchema = new Schema<IChatSession>(
       required: true,
       unique: true,
     },
+    userId: {
+      type: Schema.Types.ObjectId,
+      ref: "User",
+      required: true,
+    },
     messages: [chatMessageSchema],
+    status: {
+      type: String,
+      enum: ["active", "inactive", "closed"],
+      default: "active",
+    },
   },
   {
     timestamps: true,

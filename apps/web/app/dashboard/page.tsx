@@ -1,6 +1,6 @@
+import StartTherapy from "@/components/StartTherapy";
 import ZenGarden from "@/components/ZenGarden";
 import { BrainIcon, HeartIcon } from "lucide-react";
-
 const Dashboard = () => {
   return (
     <main className="container mx-auto">
@@ -12,10 +12,7 @@ const Dashboard = () => {
           <h3 className="text-xl font-semibold">Quick Actions</h3>
           <p className="text-gray-600 text-base">Start your wellness journey</p>
           <div className="grid grid-cols-2 gap-4">
-            <div className="col-span-2 bg-green-500 p-4 rounded-lg text-white">
-              <h4>Start Therapy</h4>
-              <p className="text-gray-500">Begin a new session</p>
-            </div>
+            <StartTherapy />
             <div className="flex flex-col items-center bg-white rounded-md p-4">
               <div className="p-2 bg-red-300 rounded-full">
                 <HeartIcon />

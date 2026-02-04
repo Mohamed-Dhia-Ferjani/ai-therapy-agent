@@ -1,184 +1,225 @@
-import { GoogleGenAI } from "@google/genai";
 import { logger } from "src/utils/looger.js";
 import { inngest } from "./index.js";
-// Initialize Gemini
+import Groq from "groq-sdk";
+import { ChatSession } from "src/models/Chat.js";
 
 console.log("Gemini key present?", process.env.GEMINI_API_KEY);
 
-let genAI: GoogleGenAI | null = null;
+let groqClient: Groq | null = null;
 
 export function getGenAI() {
-  if (!genAI) {
-    if (!process.env.GEMINI_API_KEY) {
-      throw new Error("GEMINI_API_KEY is not set");
+  if (!groqClient) {
+    if (!process.env.GROQ_API_KEY) {
+      throw new Error("GROQ_API_KEY is not set");
     }
-    genAI = new GoogleGenAI({
-      apiKey: process.env.GEMINI_API_KEY,
+
+    groqClient = new Groq({
+      apiKey: process.env.GROQ_API_KEY,
     });
   }
-  return genAI;
+
+  return groqClient;
 }
 
+export async function getGroqChatCompletion(
+  role: "user" | "assistant",
+  prompt: string,
+) {
+  const groq = getGenAI();
+  return groq.chat.completions.create({
+    messages: [
+      {
+        role,
+        content: prompt,
+      },
+    ],
+    model: "openai/gpt-oss-20b",
+  });
+}
 // Function to handle chat message processing
+// ! this start here
 export const processChatMessage = inngest.createFunction(
   {
     id: "process-chat-message",
   },
   { event: "therapy/session.message" },
   async ({ event, step }) => {
-    try {
-      const {
-        message,
-        history,
-        memory = {
-          userProfile: {
-            emotionalState: [],
-            riskLevel: 0,
-            preferences: {},
-          },
-          sessionContext: {
-            conversationThemes: [],
-            currentTechnique: null,
-          },
+    const {
+      sessionId,
+      message,
+      role,
+      history,
+      memory = {
+        userProfile: {
+          emotionalState: [],
+          riskLevel: 0,
+          preferences: {},
         },
-        goals = [],
-        systemPrompt,
-      } = event.data;
+        sessionContext: {
+          conversationThemes: [],
+          currentTechnique: null,
+        },
+      },
+      goals = [],
+      systemPrompt,
+    } = event.data;
 
-      logger.info("Processing chat message:", {
-        message,
-        historyLength: history?.length,
-      });
+    logger.info("Processing chat message", {
+      message,
+      historyLength: history?.length,
+      sessionId,
+    });
 
-      // Analyze the message using Gemini
-      const analysis = await step.run("analyze-message", async () => {
-        try {
-          const prompt = `Analyze this therapy message and provide insights. Return ONLY a valid JSON object with no markdown formatting or additional text.
-          Message: ${message}
-          Context: ${JSON.stringify({ memory, goals })}
-          
-          Required JSON structure:
-          {
-            "emotionalState": "string",
-            "themes": ["string"],
-            "riskLevel": number,
-            "recommendedApproach": "string",
-            "progressIndicators": ["string"]
-          }`;
-          //   const model =
-          const genAI = getGenAI();
-          const result = await genAI.models.generateContent({
-            model: "gemini-2.0-flash",
-            contents: prompt,
-          });
-          const response = (await result.text?.trim()) || "    ";
+    // -------------------------------------------------------
+    // 1️⃣ ANALYSIS STEP
+    // -------------------------------------------------------
+    const analysis = await step.run("analyze-message", async () => {
+      try {
+        const prompt = `
+Analyze this therapy message and return ONLY valid JSON.
 
-          logger.info("Received analysis from Gemini:", { response });
+Message: ${message}
+Context: ${JSON.stringify({ memory, goals })}
 
-          // Clean the response text to ensure it's valid JSON
-          const cleanText = response.replace(/```json\n|\n```/g, "").trim();
-          const parsedAnalysis = JSON.parse(cleanText);
+Required JSON structure:
+{
+  "emotionalState": "string",
+  "themes": ["string"],
+  "riskLevel": number,
+  "recommendedApproach": "string",
+  "progressIndicators": ["string"]
+}`;
 
-          logger.info("Successfully parsed analysis:", parsedAnalysis);
-          return parsedAnalysis;
-        } catch (error) {
-          logger.error("Error in message analysis:", { error, message });
-          // Return a default analysis instead of throwing
-          return {
-            emotionalState: "neutral",
-            themes: [],
-            riskLevel: 0,
-            recommendedApproach: "supportive",
-            progressIndicators: [],
-          };
-        }
-      });
+        const response = await getGroqChatCompletion(role, prompt);
+        const text = response.choices?.[0]?.message?.content || "";
 
-      // Update memory based on analysis
-      const updatedMemory = await step.run("update-memory", async () => {
-        if (analysis.emotionalState) {
-          memory.userProfile.emotionalState.push(analysis.emotionalState);
-        }
-        if (analysis.themes) {
-          memory.sessionContext.conversationThemes.push(...analysis.themes);
-        }
-        if (analysis.riskLevel) {
-          memory.userProfile.riskLevel = analysis.riskLevel;
-        }
-        return memory;
-      });
+        // remove accidental markdown
+        const clean = text.replace(/```json|```/g, "").trim();
 
-      // If high risk is detected, trigger an alert
-      if (analysis.riskLevel > 4) {
-        await step.run("trigger-risk-alert", async () => {
-          logger.warn("High risk level detected in chat message", {
-            message,
-            riskLevel: analysis.riskLevel,
-          });
-        });
-      }
-
-      // Generate therapeutic response
-      const response = await step.run("generate-response", async () => {
-        try {
-          const prompt = `${systemPrompt}
-          
-          Based on the following context, generate a therapeutic response:
-          Message: ${message}
-          Analysis: ${JSON.stringify(analysis)}
-          Memory: ${JSON.stringify(memory)}
-          Goals: ${JSON.stringify(goals)}
-          
-          Provide a response that:
-          1. Addresses the immediate emotional needs
-          2. Uses appropriate therapeutic techniques
-          3. Shows empathy and understanding
-          4. Maintains professional boundaries
-          5. Considers safety and well-being`;
-          const genAI = getGenAI();
-          const response = await genAI.models.generateContent({
-            model: "gemini-2.0-flash",
-            contents: prompt,
-          });
-
-          const responseText = (await response.text?.trim()) || "    ";
-
-          logger.info("Generated response:", { responseText });
-          return responseText;
-        } catch (error) {
-          logger.error("Error generating response:", { error, message });
-          // Return a default response instead of throwing
-          return "I'm here to support you. Could you tell me more about what's on your mind?";
-        }
-      });
-
-      // Return the response in the expected format
-      return {
-        response,
-        analysis,
-        updatedMemory,
-      };
-    } catch (error) {
-      logger.error("Error in chat message processing:", {
-        error,
-        message: event.data.message,
-      });
-      // Return a default response instead of throwing
-      return {
-        response:
-          "I'm here to support you. Could you tell me more about what's on your mind?",
-        analysis: {
+        return JSON.parse(clean);
+      } catch (err) {
+        logger.error("Analysis failed, returning fallback", err);
+        return {
           emotionalState: "neutral",
           themes: [],
           riskLevel: 0,
           recommendedApproach: "supportive",
           progressIndicators: [],
-        },
-        updatedMemory: event.data.memory,
-      };
-    }
+        };
+      }
+    });
+
+    // -------------------------------------------------------
+    // 2️⃣ UPDATE MEMORY STEP
+    // -------------------------------------------------------
+    const updatedMemory = await step.run("update-memory", async () => {
+      try {
+        if (analysis.emotionalState) {
+          memory.userProfile.emotionalState.push(analysis.emotionalState);
+        }
+
+        if (analysis.themes) {
+          memory.sessionContext.conversationThemes.push(...analysis.themes);
+        }
+
+        if (typeof analysis.riskLevel === "number") {
+          memory.userProfile.riskLevel = analysis.riskLevel;
+        }
+
+        return memory;
+      } catch (err) {
+        logger.error("Memory update failed", err);
+        return memory; // fallback keep old memory
+      }
+    });
+
+    // -------------------------------------------------------
+    // 3️⃣ GENERATE RESPONSE STEP
+    // -------------------------------------------------------
+    const aiResponse = await step.run("generate-response", async () => {
+      try {
+        const prompt = `
+${systemPrompt}
+
+Based on the following data, generate a supportive therapeutic response:
+
+Message: ${message}
+Analysis: ${JSON.stringify(analysis)}
+Memory: ${JSON.stringify(updatedMemory)}
+Goals: ${JSON.stringify(goals)}
+
+The response must:
+1. Address emotions
+2. Use useful therapeutic techniques
+3. Show empathy
+4. Maintain professional boundaries
+5. Prioritize user safety
+`;
+
+        const response = await getGroqChatCompletion(role, prompt);
+        return response.choices?.[0]?.message?.content || "";
+      } catch (err) {
+        logger.error("Response generation failed", err);
+        return "I'm here with you. Can you tell me more about what you're feeling right now?";
+      }
+    });
+
+    // -------------------------------------------------------
+    // 4️⃣ SAVE TO DATABASE — USER + ASSISTANT
+    // -------------------------------------------------------
+    const saveResult = await step.run("save-session-message", async () => {
+      try {
+        const session = await ChatSession.findOne({ sessionId }).exec();
+
+        if (!session) {
+          logger.error("Session not found", { sessionId });
+          throw new Error("Session not found");
+        }
+
+        // Save USER message
+        session.messages.push({
+          role: role || "user",
+          content: message,
+          // metadata: {
+          //   type: "user_message",
+          //   timestamp: new Date().toISOString(),
+          // },
+        });
+
+        // Save ASSISTANT response
+        session.messages.push({
+          role: "assistant",
+          content: aiResponse,
+          // metadata: {
+          //   type: "assistant_response",
+          //   analysis,
+          //   memory: updatedMemory,
+          //   timestamp: new Date().toISOString(),
+          // },
+        });
+
+        const result = await session.save();
+        return result;
+      } catch (err) {
+        logger.error("Failed to save session message", err);
+        throw err; // allow Inngest retry
+      }
+    });
+
+    logger.info("Message saved successfully", { saveResult });
+
+    // -------------------------------------------------------
+    // 5️⃣ RETURN FINAL OBJECT
+    // -------------------------------------------------------
+    return {
+      response: aiResponse,
+      analysis,
+      updatedMemory,
+    };
   },
 );
+
+//! this end here
 
 // Function to analyze therapy session content
 export const analyzeTherapySession = inngest.createFunction(
@@ -204,13 +245,9 @@ export const analyzeTherapySession = inngest.createFunction(
         5. Progress indicators
         
         Format the response as a JSON object.`;
-        const genAI = getGenAI();
-        const result = await genAI.models.generateContent({
-          model: "gemini-2.0-flash",
-          contents: prompt,
-        });
+        const response = await getGroqChatCompletion(event.data.role, prompt);
 
-        const text = result.text || "";
+        const text = response.choices?.[0]?.message?.content?.trim() || "";
 
         return JSON.parse(text);
       });
@@ -275,15 +312,11 @@ export const generateActivityRecommendations = inngest.createFunction(
         5. Estimated duration
         
         Format the response as a JSON object.`;
-          const genAI = getGenAI();
-          const result = await genAI.models.generateContent({
-            model: "gemini-2.0-flash",
-            contents: prompt,
-          });
 
-          const text = result.text || "";
+          const response = await getGroqChatCompletion(event.data.role, prompt);
+          const resultText = response.choices?.[0]?.message?.content || "";
 
-          return JSON.parse(text);
+          return JSON.parse(resultText);
         },
       );
 

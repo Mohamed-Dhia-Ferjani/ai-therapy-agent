@@ -1,5 +1,5 @@
+"use client";
 import Link from "next/link";
-import React from "react";
 
 const Header = () => {
   const links = [
@@ -16,6 +16,7 @@ const Header = () => {
       href: "/sign-in",
     },
   ];
+
   return (
     <div>
       <div className="container flex justify-between items-center mx-auto">

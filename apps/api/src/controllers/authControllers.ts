@@ -7,6 +7,8 @@ import { Session } from "src/models/Session.js";
 
 export const register = async (req: Request, res: Response) => {
   try {
+    console.log("i have hit the register controller");
+    console.log(req.body);
     const { name, email, password } = req.body;
     if (!name || !email || !password) {
       return res
